@@ -1,6 +1,6 @@
 import pandas as pd
 from flask import Flask, jsonify, request
-from flask_cors import CORS
+from flask_cors import CORS # Import CORS
 import json
 from datetime import datetime
 import os
@@ -14,7 +14,8 @@ SHAP_DATA_PATH = os.path.join(DATA_FOLDER, 'test_shap.csv')
 # Configure Groq API Key:
 # It's highly recommended to set this as an environment variable in production.
 # For local testing, you can temporarily put your key directly here, but remove before committing to public repos.
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY") # REPLACE WITH YOUR ACTUAL GROQ API KEY OR SET ENV VAR
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "YOUR_GROQ_API_KEY_HERE") # REPLACE WITH YOUR ACTUAL GROQ API KEY OR SET ENV VAR
+
 app = Flask(__name__)
 # IMPORTANT: For development/debugging in CodeSandbox, setting origins to "*"
 # will bypass CORS issues. FOR PRODUCTION, ALWAYS SPECIFY YOUR FRONTEND DOMAINS!
@@ -62,6 +63,12 @@ class JsonGenerator:
 
         trials_data = []
         for _, row in paginated_df.iterrows():
+            # Safely get integer values, converting NaN to 0 or default if present
+            enrollment_val = row.get('Enrollment')
+            countries_val = row.get('Country Count')
+            duration_val = row.get('Study Duration')
+            start_year_val = row.get('Start_Date_Year')
+
             trial = {
                 "id": str(row['Trial_ID']),
                 "title": f"Trial for {row.get('Therapeutic Area', 'Unknown Area')} in {row.get('Study Status', 'Unknown Status')} - {row['Trial_ID']}",
@@ -69,10 +76,11 @@ class JsonGenerator:
                 "therapeuticArea": str(row.get('Therapeutic Area', 'Unknown Area')),
                 "status": str(row.get('Study Status', 'Unknown')),
                 "pts": float(round(row.get('PTS', 0.0), 1)),
-                "enrollment": int(row.get('Enrollment', 0)),
-                "countries": int(row.get('Country Count', 0)),
-                "duration": int(row.get('Study Duration', 0)),
-                "startYear": int(row.get('Start_Date_Year', 2020)),
+                # Fixed NaN to int conversion here
+                "enrollment": int(enrollment_val) if pd.notna(enrollment_val) else 0,
+                "countries": int(countries_val) if pd.notna(countries_val) else 0,
+                "duration": int(duration_val) if pd.notna(duration_val) else 0,
+                "startYear": int(start_year_val) if pd.notna(start_year_val) else 2020,
                 "primaryCountry": "United States", # Placeholder
                 "hasOS": bool(row.get('Presence of \'Overall Survival\' (OS)', False)),
                 "hasPFS": bool(row.get('Presence of \'Progression Free Survival\' (PFS)', False)),
@@ -321,7 +329,7 @@ def status_check():
     return jsonify({"message": "Flask server is running!"}), 200
 
 
-# --- NEW: Groq AI Assistant Endpoint ---
+# --- Groq AI Assistant Tools and Client ---
 
 # Initialize Groq client globally once
 groq_client = Groq(api_key=GROQ_API_KEY)
@@ -428,11 +436,11 @@ def call_tool(tool_name, **kwargs):
         formatted_data = []
         for t in filtered_trials:
             formatted_data.append({
-                "id": t['id'],
-                "sponsor": t['sponsor'],
-                "pts": t['pts'],
-                "enrollment": t.get('enrollment', 'N/A'), # Ensure enrollment is present
-                "status": t['status']
+                "id": t.get('id', 'N/A'),
+                "sponsor": t.get('sponsor', 'N/A'),
+                "pts": t.get('pts', 0.0), # Ensure pts is a float
+                "enrollment": t.get('enrollment', 'N/A'),
+                "status": t.get('status', 'N/A')
             })
 
         return {
@@ -457,7 +465,7 @@ def call_tool(tool_name, **kwargs):
             "type": "list",
             "title": f"Sponsors with Average PTS >= {min_pts}% (Top {limit})",
             "data": [
-                f"{s['sponsor']}: {s['averagePTS']:.1f}% Avg PTS, {s['totalTrials']} Trials"
+                f"{s.get('sponsor', 'N/A')}: {s.get('averagePTS', 0.0):.1f}% Avg PTS, {s.get('totalTrials', 0)} Trials"
                 for s in top_sponsors
             ]
         }
@@ -481,18 +489,17 @@ def call_tool(tool_name, **kwargs):
         formatted_data = []
         for t in filtered_trials:
             formatted_data.append({
-                "id": t['id'],
-                "sponsor": t['sponsor'],
-                "therapeuticArea": t['therapeuticArea'],
-                "pts": t['pts'],
-                "enrollment": t.get('enrollment', 'N/A'), # Ensure enrollment is present
-                "status": t['status'] # Ensure status is present
+                "id": t.get('id', 'N/A'),
+                "sponsor": t.get('sponsor', 'N/A'),
+                "therapeuticArea": t.get('therapeuticArea', 'N/A'),
+                "pts": t.get('pts', 0.0), # Ensure pts is a float
+                "enrollment": t.get('enrollment', 'N/A'),
+                "status": t.get('status', 'N/A')
             })
 
         return {
             "type": "table",
             "title": f"Trials with '{endpoint_type}' as an Endpoint",
-            # Frontend uses hardcoded headers, so this 'columns' array is primarily for semantic info or future dynamic rendering
             "columns": ["Trial ID", "Sponsor", "Therapeutic Area", "PTS", "Enrollment", "Status"],
             "data": formatted_data
         }
@@ -514,9 +521,11 @@ def call_tool(tool_name, **kwargs):
 
 @app.route('/api/chat', methods=['POST'])
 def chat_with_ai():
-    if GROQ_API_KEY == "YOUR_GROQ_API_KEY_HERE":
+    # Check if API key is configured
+    if GROQ_API_KEY == "YOUR_GROQ_API_KEY_HERE" or not GROQ_API_KEY:
         return jsonify({"success": False, "message": "Groq API key not configured. Please set GROQ_API_KEY environment variable or replace placeholder."}), 500
 
+    # Check if data is loaded
     if json_gen is None or df_backend.empty:
         return jsonify({"success": False, "message": "API server not ready: Data not loaded."}), 503
 
@@ -540,7 +549,7 @@ def chat_with_ai():
     try:
         chat_completion = groq_client.chat.completions.create(
             messages=messages,
-            model="llama-3.1-8b-instant",
+            model="llama-3.1-8b-instant", # Changed model here
             tools=TOOLS,
             tool_choice="auto",
             max_tokens=2048
@@ -551,40 +560,63 @@ def chat_with_ai():
             messages.append(chat_completion.choices[0].message)
 
             tool_outputs = [] # Collect outputs from all tool calls
+            llm_explanation = "" # To store the LLM's final text explanation
+
             for tool_call in tool_calls:
                 tool_name = tool_call.function.name
-                tool_args = json.loads(tool_call.function.arguments)
-                print(f"LLM wants to call tool: {tool_name} with args: {tool_args}")
+                tool_args = {}
+                try:
+                    tool_args = json.loads(tool_call.function.arguments)
+                except json.JSONDecodeError as e:
+                    # Robustly handle malformed arguments from LLM
+                    app.logger.error(f"LLM generated malformed JSON for tool {tool_name}: {tool_call.function.arguments}. Error: {e}")
+                    # Provide a fallback message to the user
+                    return jsonify({"success": False, "message": "The AI encountered an issue processing its internal thoughts. Please try rephrasing your query."}), 500
+
 
                 tool_output = call_tool(tool_name, **tool_args)
-                tool_outputs.append(tool_output) # Store the actual dict output
+                
+                # Robustly check tool_output structure
+                if isinstance(tool_output, dict) and 'type' in tool_output:
+                    tool_outputs.append(tool_output) # Store the actual dict output
+                else:
+                    app.logger.error(f"Tool '{tool_name}' returned unexpected data type or missing 'type' key: {tool_output}")
+                    # If tool output is bad, don't use it, and let LLM explain or fall back
+                    llm_explanation = "The tool encountered an issue processing the data for your request."
+                    # No structured data to return, proceed to get LLM's explanation if any
+                    continue # Skip appending this bad tool output to messages for LLM
 
                 messages.append(
                     {
                         "tool_call_id": tool_call.id,
                         "role": "tool",
                         "name": tool_name,
-                        "content": json.dumps(tool_output)
+                        "content": json.dumps(tool_output) # Tool output must be a string
                     }
                 )
             
+            # Get final response from LLM after tool execution
             final_completion = groq_client.chat.completions.create(
                 messages=messages,
-                model="llama-3.1-70b-versatile",
+                model="llama-3.1-8b-instant", # Changed model here
                 max_tokens=2048
             )
             llm_response_content = final_completion.choices[0].message.content
             
-            # Prioritize structured tool output for frontend rendering
             if tool_outputs:
                 # If multiple tools were called, you might choose to return the first one,
                 # or combine them, depending on expected frontend behavior.
                 # For now, let's return the first tool's structured output.
                 return jsonify({"success": True, "data": tool_outputs[0]})
+            elif llm_explanation:
+                # If a tool failed but we have an explanation, provide that
+                 return jsonify({"success": True, "data": {"type": "text", "message": llm_explanation}})
             else:
+                # Fallback to direct LLM response if no structured output was valid
                 return jsonify({"success": True, "data": {"type": "text", "message": llm_response_content}})
 
         else:
+            # No tool call, direct response from LLM
             llm_response_content = chat_completion.choices[0].message.content
             return jsonify({"success": True, "data": {"type": "text", "message": llm_response_content}})
 
