@@ -540,7 +540,7 @@ def chat_with_ai():
     try:
         chat_completion = groq_client.chat.completions.create(
             messages=messages,
-            model="llama-3.1-70b-versatile",
+            model="llama-3.1-8b-instant",
             tools=TOOLS,
             tool_choice="auto",
             max_tokens=2048
