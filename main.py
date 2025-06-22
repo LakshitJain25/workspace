@@ -14,8 +14,7 @@ SHAP_DATA_PATH = os.path.join(DATA_FOLDER, 'test_shap.csv')
 # Configure Groq API Key:
 # It's highly recommended to set this as an environment variable in production.
 # For local testing, you can temporarily put your key directly here, but remove before committing to public repos.
-GROQ_API_KEY = "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" # REPLACE WITH YOUR ACTUAL GROQ API KEY OR SET ENV VAR
-
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY") # REPLACE WITH YOUR ACTUAL GROQ API KEY OR SET ENV VAR
 app = Flask(__name__)
 # IMPORTANT: For development/debugging in CodeSandbox, setting origins to "*"
 # will bypass CORS issues. FOR PRODUCTION, ALWAYS SPECIFY YOUR FRONTEND DOMAINS!
