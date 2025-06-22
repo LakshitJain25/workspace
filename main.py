@@ -35,7 +35,7 @@ class JsonGenerator:
         if status:
             df = df[df['Study Status'].str.contains(status, case=False, na=False)]
         if sponsor:
-            df = df[df['Funder Type'].str.contains(sponsor, case=False, na=False)]
+            df = df[df['Sponsor'].str.contains(sponsor, case=False, na=False)]
         if search:
             df = df[df['Trial_ID'].str.contains(search, case=False, na=False) |
                     df['Study Title Length'].astype(str).str.contains(search, case=False, na=False)]
@@ -61,7 +61,7 @@ class JsonGenerator:
             trial = {
                 "id": str(row['Trial_ID']),
                 "title": f"Trial for {row.get('Therapeutic Area', 'Unknown Area')} in {row.get('Study Status', 'Unknown Status')} - {row['Trial_ID']}",
-                "sponsor": str(row.get('Funder Type', 'Unknown Sponsor')),
+                "sponsor": str(row.get('Sponsor', 'Unknown Sponsor')),
                 "therapeuticArea": str(row.get('Therapeutic Area', 'Unknown Area')),
                 "status": str(row.get('Study Status', 'Unknown')),
                 "pts": float(round(row.get('PTS', 0.0), 1)),
@@ -168,15 +168,15 @@ class JsonGenerator:
         pts_distribution_counts = pts_ranges.value_counts().sort_index()
         pts_distribution_list = [{"range": str(r), "count": int(c)} for r, c in pts_distribution_counts.items()]
 
-        self.df_backend['Funder Type'] = self.df_backend['Funder Type'].fillna('Unknown')
-        sponsor_performance = self.df_backend.groupby('Funder Type').agg(
+        self.df_backend['Sponsor'] = self.df_backend['Sponsor'].fillna('Unknown')
+        sponsor_performance = self.df_backend.groupby('Sponsor').agg(
             totalTrials=('Trial_ID', 'count'),
             averagePTS=('PTS', 'mean'),
             successRate=('Sponsor_Success_Rate', 'mean')
         ).reset_index()
         sponsor_performance_list = sponsor_performance.apply(
             lambda row: {
-                "sponsor": str(row['Funder Type']),
+                "sponsor": str(row['Sponsor']),
                 "totalTrials": int(row['totalTrials']),
                 "averagePTS": float(round(row['averagePTS'], 2)),
                 "successRate": float(round(row['successRate'] * 100, 2)) if pd.notna(row['successRate']) else 0.0
