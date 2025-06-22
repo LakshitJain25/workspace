@@ -327,4 +327,4 @@ def status_check():
 if __name__ == '__main__':
     # This block is for local development only.
     # For production, use a WSGI server like Gunicorn (see instructions below).
-    app.run(debug=True, host='127.0.0.1', port=5000)
+    app.run(debug=True, host='0.0.0.0', port=5000)
