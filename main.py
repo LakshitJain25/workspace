@@ -1,20 +1,25 @@
 import pandas as pd
 from flask import Flask, jsonify, request
-from flask_cors import CORS # Import CORS
+from flask_cors import CORS
 import json
 from datetime import datetime
 import os
+from groq import Groq # Import Groq library
 
 # --- Configuration ---
-# In a real-world app, you might use a more sophisticated config management
-# e.g., Flask-DotEnv, environment variables, or a dedicated config file.
-# For simplicity, we'll assume CSVs are in the same directory.
-DATA_FOLDER = os.path.dirname(os.path.abspath(__file__)) # Directory where app.py resides
+DATA_FOLDER = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DATA_PATH = os.path.join(DATA_FOLDER, 'test_data_backend.csv')
 SHAP_DATA_PATH = os.path.join(DATA_FOLDER, 'test_shap.csv')
 
+# Configure Groq API Key:
+# It's highly recommended to set this as an environment variable in production.
+# For local testing, you can temporarily put your key directly here, but remove before committing to public repos.
+GROQ_API_KEY = "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" # REPLACE WITH YOUR ACTUAL GROQ API KEY OR SET ENV VAR
+
 app = Flask(__name__)
-CORS(app,origins=["https://n6dr7g.csb.app","*"]) # Enable CORS for all routes (you can restrict it to specific origins/routes)
+# IMPORTANT: For development/debugging in CodeSandbox, setting origins to "*"
+# will bypass CORS issues. FOR PRODUCTION, ALWAYS SPECIFY YOUR FRONTEND DOMAINS!
+CORS(app, origins=["https://n6dr7g.csb.app", "*"])
 
 # --- JsonGenerator Class (reused from previous step) ---
 class JsonGenerator:
@@ -227,7 +232,7 @@ class JsonGenerator:
         return response
 
 # --- Data Loading (Global for the app instance) ---
-df_backend = pd.DataFrame() # Initialize empty DataFrames
+df_backend = pd.DataFrame()
 df_shap = pd.DataFrame()
 json_gen = None
 
@@ -240,7 +245,6 @@ def load_data():
         print("Data loaded successfully.")
     except FileNotFoundError as e:
         print(f"Error: Data file not found: {e}. Please ensure CSVs are in the correct directory.")
-        # Optionally, you might want to exit or provide a more robust fallback
     except Exception as e:
         print(f"An unexpected error occurred during data loading: {e}")
 
@@ -248,12 +252,12 @@ def load_data():
 load_data()
 
 
-# --- API Endpoints ---
+# --- API Endpoints (Existing) ---
 
 @app.route('/api/trials', methods=['GET'])
 def get_all_trials():
     if json_gen is None or df_backend.empty:
-        return jsonify({"success": False, "message": "API server not ready: Data not loaded."}), 503 # Service Unavailable
+        return jsonify({"success": False, "message": "API server not ready: Data not loaded."}), 503
 
     page = request.args.get('page', 1, type=int)
     limit = request.args.get('limit', 50, type=int)
@@ -306,7 +310,6 @@ def get_analytics():
         app.logger.error(f"Error in /api/trials/analytics: {e}")
         return jsonify({"success": False, "message": "An internal server error occurred."}), 500
 
-# --- Health Check Endpoint (Optional but Recommended) ---
 @app.route('/health', methods=['GET'])
 def health_check():
     if json_gen is not None and not df_backend.empty:
@@ -314,17 +317,282 @@ def health_check():
     else:
         return jsonify({"status": "degraded", "message": "API is running, but data not fully loaded."}), 503
 
-# --- New Empty Route for Status Check ---
 @app.route('/status', methods=['GET'])
 def status_check():
-    """
-    A simple route to check if the Flask server is running.
-    Returns a basic JSON response.
-    """
     return jsonify({"message": "Flask server is running!"}), 200
+
+
+# --- NEW: Groq AI Assistant Endpoint ---
+
+# Initialize Groq client globally once
+groq_client = Groq(api_key=GROQ_API_KEY)
+
+# Define the tools available to the Groq LLM
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_high_pts_oncology_trials",
+            "description": "Retrieves clinical trials in the Oncology therapeutic area with high PTS scores. Filters by minimum PTS and limits results.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "min_pts": {
+                        "type": "integer",
+                        "description": "Minimum PTS score to filter by.",
+                        "default": 70
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of trials to return.",
+                        "default": 5
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_top_sponsors_by_pts",
+            "description": "Retrieves the top sponsors based on their average PTS scores or number of trials exceeding a certain PTS score.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "min_pts": {
+                        "type": "integer",
+                        "description": "Minimum PTS score for trials to be considered for sponsor ranking. Defaults to 80.",
+                        "default": 80
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of top sponsors to return.",
+                        "default": 5
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_trials_by_endpoint",
+            "description": "Lists trials that use a specific primary endpoint type (e.g., Overall Survival, Progression Free Survival, Objective Response Rate).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "endpoint_type": {
+                        "type": "string",
+                        "enum": ["Overall Survival", "Progression Free Survival", "Objective Response Rate"],
+                        "description": "The type of primary endpoint to filter trials by (OS, PFS, or ORR)."
+                    }
+                },
+                "required": ["endpoint_type"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_global_failure_features",
+            "description": "Provides insights into top features generally contributing to trial failures based on pre-analyzed global data. This tool does not take specific trial IDs.",
+            "parameters": {
+                "type": "object",
+                "properties": {}, # No parameters for this global insight
+                "required": []
+            }
+        }
+    }
+]
+
+# Tool Dispatcher: Maps tool names to functions
+def call_tool(tool_name, **kwargs):
+    if tool_name == "get_high_pts_oncology_trials":
+        all_trials_data = json_gen.generate_all_trials_json(
+            therapeutic_area="Oncology",
+            limit=len(json_gen.df_backend), # Fetch all relevant data to filter client-side
+            sort='PTS',
+            order='desc'
+        )
+        min_pts = kwargs.get('min_pts', 70)
+        limit = kwargs.get('limit', 5)
+
+        filtered_trials = [
+            t for t in all_trials_data['data'] if t['pts'] >= min_pts
+        ]
+        # Sort and limit after client-side filtering
+        filtered_trials = sorted(filtered_trials, key=lambda x: x['pts'], reverse=True)[:limit]
+
+        # Structure data to match frontend's hardcoded table rendering
+        formatted_data = []
+        for t in filtered_trials:
+            formatted_data.append({
+                "id": t['id'],
+                "sponsor": t['sponsor'],
+                "pts": t['pts'],
+                "enrollment": t.get('enrollment', 'N/A'), # Ensure enrollment is present
+                "status": t['status']
+            })
+
+        return {
+            "type": "table",
+            "title": f"Top Oncology Trials with PTS >= {min_pts}%",
+            # Frontend uses hardcoded headers, so this 'columns' array is primarily for semantic info or future dynamic rendering
+            "columns": ["Trial ID", "Sponsor", "PTS", "Enrollment", "Status"],
+            "data": formatted_data
+        }
+
+    elif tool_name == "get_top_sponsors_by_pts":
+        analytics_data = json_gen.generate_analytics_json()
+        min_pts = kwargs.get('min_pts', 80)
+        limit = kwargs.get('limit', 5)
+
+        top_sponsors = [
+            s for s in analytics_data['data']['sponsorPerformance'] if s['averagePTS'] >= min_pts
+        ]
+        top_sponsors = sorted(top_sponsors, key=lambda x: x['averagePTS'], reverse=True)[:limit]
+
+        return {
+            "type": "list",
+            "title": f"Sponsors with Average PTS >= {min_pts}% (Top {limit})",
+            "data": [
+                f"{s['sponsor']}: {s['averagePTS']:.1f}% Avg PTS, {s['totalTrials']} Trials"
+                for s in top_sponsors
+            ]
+        }
+
+    elif tool_name == "get_trials_by_endpoint":
+        endpoint_type = kwargs.get('endpoint_type')
+        if not endpoint_type:
+            return {"error": "Endpoint type is required."}
+
+        # Use generate_all_trials_json to get data, fetch all if necessary
+        all_trials_data = json_gen.generate_all_trials_json(limit=len(json_gen.df_backend))
+
+        filtered_trials = []
+        for trial in all_trials_data['data']:
+            if (endpoint_type == "Overall Survival" and trial.get('hasOS', False)) or \
+               (endpoint_type == "Progression Free Survival" and trial.get('hasPFS', False)) or \
+               (endpoint_type == "Objective Response Rate" and trial.get('hasORR', False)):
+                filtered_trials.append(trial)
+        
+        # Structure data to match frontend's hardcoded table rendering
+        formatted_data = []
+        for t in filtered_trials:
+            formatted_data.append({
+                "id": t['id'],
+                "sponsor": t['sponsor'],
+                "therapeuticArea": t['therapeuticArea'],
+                "pts": t['pts'],
+                "enrollment": t.get('enrollment', 'N/A'), # Ensure enrollment is present
+                "status": t['status'] # Ensure status is present
+            })
+
+        return {
+            "type": "table",
+            "title": f"Trials with '{endpoint_type}' as an Endpoint",
+            # Frontend uses hardcoded headers, so this 'columns' array is primarily for semantic info or future dynamic rendering
+            "columns": ["Trial ID", "Sponsor", "Therapeutic Area", "PTS", "Enrollment", "Status"],
+            "data": formatted_data
+        }
+
+    elif tool_name == "get_global_failure_features":
+        return {
+            "type": "features",
+            "title": "Top 5 Features Generally Contributing to Trial Failures",
+            "features": [
+                {"name": "Inadequate Enrollment Size", "impact": "23%", "description": "Trials with lower enrollment often face statistical power issues."},
+                {"name": "Extended Study Duration", "impact": "18%", "description": "Overly long studies can lead to increased costs and dropouts."},
+                {"name": "Lack of Biomarker Strategy", "impact": "15%", "description": "Without clear patient selection, drug efficacy might be diluted."},
+                {"name": "Single-Country Studies", "impact": "12%", "description": "Limited geographic diversity can impact generalizability of results."},
+                {"name": "Unclear Primary Endpoints", "impact": "10%", "description": "Ambiguous endpoint definition makes trial success difficult to measure."}
+            ]
+        }
+    return {"error": "Tool not found."}
+
+
+@app.route('/api/chat', methods=['POST'])
+def chat_with_ai():
+    if GROQ_API_KEY == "YOUR_GROQ_API_KEY_HERE":
+        return jsonify({"success": False, "message": "Groq API key not configured. Please set GROQ_API_KEY environment variable or replace placeholder."}), 500
+
+    if json_gen is None or df_backend.empty:
+        return jsonify({"success": False, "message": "API server not ready: Data not loaded."}), 503
+
+    data = request.get_json()
+    user_message_content = data.get('message')
+
+    if not user_message_content:
+        return jsonify({"success": False, "message": "No message provided."}), 400
+
+    messages = [
+        {
+            "role": "system",
+            "content": "You are a clinical trials analysis assistant. Provide insights based on the provided trial data context. Use the available tools to answer specific data queries. If a query requires data not covered by tools, respond gracefully indicating so."
+        },
+        {
+            "role": "user",
+            "content": user_message_content
+        }
+    ]
+
+    try:
+        chat_completion = groq_client.chat.completions.create(
+            messages=messages,
+            model="llama-3.1-70b-versatile",
+            tools=TOOLS,
+            tool_choice="auto",
+            max_tokens=2048
+        )
+
+        tool_calls = chat_completion.choices[0].message.tool_calls
+        if tool_calls:
+            messages.append(chat_completion.choices[0].message)
+
+            tool_outputs = [] # Collect outputs from all tool calls
+            for tool_call in tool_calls:
+                tool_name = tool_call.function.name
+                tool_args = json.loads(tool_call.function.arguments)
+                print(f"LLM wants to call tool: {tool_name} with args: {tool_args}")
+
+                tool_output = call_tool(tool_name, **tool_args)
+                tool_outputs.append(tool_output) # Store the actual dict output
+
+                messages.append(
+                    {
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": tool_name,
+                        "content": json.dumps(tool_output)
+                    }
+                )
+            
+            final_completion = groq_client.chat.completions.create(
+                messages=messages,
+                model="llama-3.1-70b-versatile",
+                max_tokens=2048
+            )
+            llm_response_content = final_completion.choices[0].message.content
+            
+            # Prioritize structured tool output for frontend rendering
+            if tool_outputs:
+                # If multiple tools were called, you might choose to return the first one,
+                # or combine them, depending on expected frontend behavior.
+                # For now, let's return the first tool's structured output.
+                return jsonify({"success": True, "data": tool_outputs[0]})
+            else:
+                return jsonify({"success": True, "data": {"type": "text", "message": llm_response_content}})
+
+        else:
+            llm_response_content = chat_completion.choices[0].message.content
+            return jsonify({"success": True, "data": {"type": "text", "message": llm_response_content}})
+
+    except Exception as e:
+        app.logger.error(f"Error in Groq chat: {e}")
+        return jsonify({"success": False, "message": f"An error occurred while processing your request: {str(e)}"}), 500
 
 # --- How to run the Flask app for local development ---
 if __name__ == '__main__':
-    # This block is for local development only.
-    # For production, use a WSGI server like Gunicorn (see instructions below).
     app.run(debug=True, host='0.0.0.0', port=5000)
