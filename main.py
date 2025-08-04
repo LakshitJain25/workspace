@@ -3,19 +3,23 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS # Import CORS
 import json
 from datetime import datetime
+import pickle
+import shap
 import os
 from groq import Groq # Import Groq library
+
+from dotenv import load_dotenv
+load_dotenv()
 
 # --- Configuration ---
 DATA_FOLDER = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DATA_PATH = os.path.join(DATA_FOLDER, 'test_data_backend.csv')
 SHAP_DATA_PATH = os.path.join(DATA_FOLDER, 'test_shap.csv')
-
+MODEL_PATH = os.path.join(DATA_FOLDER,"model.pkl")
 # Configure Groq API Key:
 # It's highly recommended to set this as an environment variable in production.
 # For local testing, you can temporarily put your key directly here, but remove before committing to public repos.
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "YOUR_GROQ_API_KEY_HERE") # REPLACE WITH YOUR ACTUAL GROQ API KEY OR SET ENV VAR
-
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "YOUR_GROQ_API_KEY_HERE") 
 app = Flask(__name__)
 # IMPORTANT: For development/debugging in CodeSandbox, setting origins to "*"
 # will bypass CORS issues. FOR PRODUCTION, ALWAYS SPECIFY YOUR FRONTEND DOMAINS!
@@ -241,6 +245,10 @@ class JsonGenerator:
 # --- Data Loading (Global for the app instance) ---
 df_backend = pd.DataFrame()
 df_shap = pd.DataFrame()
+
+with open(MODEL_PATH,'rb') as model_file:
+    model = pickle.load(model_file)
+
 json_gen = None
 
 def load_data():
@@ -331,6 +339,30 @@ def status_check():
 
 # --- Groq AI Assistant Tools and Client ---
 
+def predict_pts(trial_row):
+  preprocessor = model.named_steps['preprocessor']
+  classifier = model.named_steps['classifier']
+  test_df_transformed = preprocessor.transform(trial_row)
+  preds = classifier.predict_proba(test_df_transformed)[:,1]
+  return preds[0]
+
+def what_if_scenario_tool(trial_id, changes):
+    global df_backend
+    trial_row = df_backend[df_backend['Trial_ID'] == trial_id].copy()
+    for change_col , change_val in changes.items():
+        trial_row[change_col] = change_val
+    new_pts = predict_pts(trial_row)
+    old_pts = trial_row['PTS'].values[0]
+    if len(trial_row) == 0:
+        return {
+            trial_id:False
+        }
+    return {
+        "trial_id":trial_id,
+        "new_pts":new_pts,
+        "old_pts":old_pts
+    }
+
 # Initialize Groq client globally once
 groq_client = Groq(api_key=GROQ_API_KEY)
 
@@ -347,7 +379,7 @@ TOOLS = [
                     "min_pts": {
                         "type": "integer",
                         "description": "Minimum PTS score to filter by.",
-                        "default": 70
+                        "default": 60
                     },
                     "limit": {
                         "type": "integer",
@@ -369,8 +401,8 @@ TOOLS = [
                 "properties": {
                     "min_pts": {
                         "type": "integer",
-                        "description": "Minimum PTS score for trials to be considered for sponsor ranking. Defaults to 80.",
-                        "default": 80
+                        "description": "Minimum PTS score for trials to be considered for sponsor ranking. Defaults to 60.",
+                        "default": 60
                     },
                     "limit": {
                         "type": "integer",
@@ -411,7 +443,54 @@ TOOLS = [
                 "required": []
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "what_if_scenario_tool",
+            "description": "Facilitates what-if scenario analysis by allowing users to modify key trial attributes such as enrollment, masking, intervention model, allocation, and primary purpose to see their impact on predicted trial success. Can take Trial ID or NCT ID",
+            "parameters": {
+            "type": "object",
+            "properties": {
+                "trial_id": {
+                "type": "string",
+                "description": "Unique identifier for the clinical trial to analyze. can also be reffered as NCTID or Trial_ID column"
+                },
+                "changes": {
+                "type": "object",
+                "description": "A dictionary of column-value pairs representing the attributes and their new hypothetical values for the trial. Valid columns include enrollment, masking, intervention model, allocation, and primary purpose.",
+                "properties": {
+                    "Enrollment": {
+                    "type": "integer",
+                    "description": "Hypothetical enrollment count."
+                    },
+                    "Masking": {
+                    "type": "string",
+                    "description": " Hypothetical masking type, will be one of these values if not then map to most appropriate: 'NONE', 'DOUBLE (PARTICIPANT, INVESTIGATOR)', 'QUADRUPLE (PARTICIPANT, CARE_PROVIDER, INVESTIGATOR, OUTCOMES_ASSESSOR)',\
+                                    'TRIPLE (PARTICIPANT, INVESTIGATOR, OUTCOMES_ASSESSOR)','SINGLE (OUTCOMES_ASSESSOR)',\
+                                    'TRIPLE (PARTICIPANT, CARE_PROVIDER, INVESTIGATOR)',\
+                                    'DOUBLE (PARTICIPANT, CARE_PROVIDER)', 'SINGLE (PARTICIPANT)'"
+                    },
+                    "Intervention Model": {
+                    "type": "string",
+                    "description": "Hypothetical intervention model, will be one of these values if not then map to most appropriate 'PARALLEL', 'FACTORIAL', 'SEQUENTIAL', 'CROSSOVER', 'SINGLE_GROUP'."
+                    },
+                    "Allocation": {
+                    "type": "string",
+                    "description": "Hypothetical allocation method, will be one of these values if not then map to most appropriate : 'RANDOMIZED', 'NON_RANDOMIZED'."
+                    },
+                    "Primary Purpose": {
+                    "type": "string",
+                    "description": "Hypothetical primary purpose, will be one of these values if not then map to most appropriate :  'TREATMENT', 'DIAGNOSTIC'."
+                    }
+                },
+                "additionalProperties": False
+                }
+      },
+      "required": ["trial_id", "changes"]
     }
+  }
+}
 ]
 
 # Tool Dispatcher: Maps tool names to functions
@@ -516,6 +595,18 @@ def call_tool(tool_name, **kwargs):
                 {"name": "Unclear Primary Endpoints", "impact": "10%", "description": "Ambiguous endpoint definition makes trial success difficult to measure."}
             ]
         }
+
+    elif tool_name == "what_if_scenario_tool":
+        what_if_prediction = what_if_scenario_tool(**kwargs)
+        if what_if_prediction['trial_id'] == False:
+            return {
+                "error":"Trial ID Not Found"
+            }
+        return {
+            "type":"text",
+            "title":f"What If Scenario For {what_if_prediction['trial_id']}",
+            "data": what_if_prediction
+        }
     return {"error": "Tool not found."}
 
 
@@ -549,7 +640,7 @@ def chat_with_ai():
     try:
         chat_completion = groq_client.chat.completions.create(
             messages=messages,
-            model="llama-3.1-8b-instant", # Changed model here
+            model="llama-3.3-70b-versatile", # Changed model here
             tools=TOOLS,
             tool_choice="auto",
             max_tokens=2048
@@ -602,12 +693,11 @@ def chat_with_ai():
                 max_tokens=2048
             )
             llm_response_content = final_completion.choices[0].message.content
-            
             if tool_outputs:
                 # If multiple tools were called, you might choose to return the first one,
                 # or combine them, depending on expected frontend behavior.
                 # For now, let's return the first tool's structured output.
-                return jsonify({"success": True, "data": tool_outputs[0]})
+                return jsonify({"success": True, "data": tool_outputs[0], message:llm_response_content})
             elif llm_explanation:
                 # If a tool failed but we have an explanation, provide that
                  return jsonify({"success": True, "data": {"type": "text", "message": llm_explanation}})
