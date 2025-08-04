@@ -2,7 +2,7 @@ import requests
 url = 'http://127.0.0.1:5000/api/chat'
 
 payload = {
-    "message": "what if NCT05057494 has enrollment of 3000 people ,  uses quadruple blind masking, and uses randomized allocation, with a parallel intervention model?"
+    "message": "what can you do?"
 }
 
 # Optional: headers, e.g., if you want to specify content type as JSON

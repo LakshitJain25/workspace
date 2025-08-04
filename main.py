@@ -340,6 +340,7 @@ def status_check():
 # --- Groq AI Assistant Tools and Client ---
 
 def predict_pts(trial_row):
+  print(trial_row[['Allocation','Masking']])
   preprocessor = model.named_steps['preprocessor']
   classifier = model.named_steps['classifier']
   test_df_transformed = preprocessor.transform(trial_row)
@@ -349,6 +350,7 @@ def predict_pts(trial_row):
 def what_if_scenario_tool(trial_id, changes):
     global df_backend
     trial_row = df_backend[df_backend['Trial_ID'] == trial_id].copy()
+    print(trial_row[['Allocation','Masking']])
     for change_col , change_val in changes.items():
         trial_row[change_col] = change_val
     new_pts = predict_pts(trial_row)
@@ -697,7 +699,7 @@ def chat_with_ai():
                 # If multiple tools were called, you might choose to return the first one,
                 # or combine them, depending on expected frontend behavior.
                 # For now, let's return the first tool's structured output.
-                return jsonify({"success": True, "data": tool_outputs[0], message:llm_response_content})
+                return jsonify({"success": True, "data": tool_outputs[0], "message":llm_response_content})
             elif llm_explanation:
                 # If a tool failed but we have an explanation, provide that
                  return jsonify({"success": True, "data": {"type": "text", "message": llm_explanation}})
