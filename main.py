@@ -350,16 +350,16 @@ def predict_pts(trial_row):
 def what_if_scenario_tool(trial_id, changes):
     global df_backend
     trial_row = df_backend[df_backend['Trial_ID'] == trial_id].copy()
+    old_pts = trial_row['PTS'].values[0]
     send_changes = []
     for change_col , change_val in changes.items():
         send_changes.append({
             "column":change_col,
-            "old_value":trial_row[change_col],
+            "old_value":old_pts,
             "new_value":change_val
         })
         trial_row[change_col] = change_val
     new_pts = predict_pts(trial_row)
-    old_pts = trial_row['PTS'].values[0]
     if len(trial_row) == 0:
         return {
             trial_id:False
