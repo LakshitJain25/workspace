@@ -355,7 +355,7 @@ def what_if_scenario_tool(trial_id, changes):
     for change_col , change_val in changes.items():
         send_changes.append({
             "column":change_col,
-            "old_value":old_pts,
+            "old_value":trial_row[change_col].values[0],
             "new_value":change_val
         })
         trial_row[change_col] = change_val
