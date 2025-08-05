@@ -350,8 +350,13 @@ def predict_pts(trial_row):
 def what_if_scenario_tool(trial_id, changes):
     global df_backend
     trial_row = df_backend[df_backend['Trial_ID'] == trial_id].copy()
-    print(trial_row[['Allocation','Masking']])
+    send_changes = []
     for change_col , change_val in changes.items():
+        send_changes.append({
+            "column":change_col,
+            "old_value":trial_row[change_col],
+            "new_value":change_val
+        })
         trial_row[change_col] = change_val
     new_pts = predict_pts(trial_row)
     old_pts = trial_row['PTS'].values[0]
@@ -362,7 +367,8 @@ def what_if_scenario_tool(trial_id, changes):
     return {
         "trial_id":trial_id,
         "new_pts":new_pts,
-        "old_pts":old_pts
+        "old_pts":old_pts,
+        "changes":send_changes
     }
 
 # Initialize Groq client globally once
@@ -450,7 +456,8 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "what_if_scenario_tool",
-            "description": "Facilitates what-if scenario analysis by allowing users to modify key trial attributes such as enrollment, masking, intervention model, allocation, and primary purpose to see their impact on predicted trial success. Can take Trial ID or NCT ID",
+            "description": "Facilitates what-if scenarios analysis by allowing users to modify key trial attributes such as enrollment, masking, intervention model, allocation, and primary purpose to see their impact on trial success probability.\
+             It Can take Trial ID or NCT ID. It calculates and returns new and old trial success probability , where new success probability is for what if scenario, PTS stands for Probability of Trial Success",
             "parameters": {
             "type": "object",
             "properties": {
@@ -605,7 +612,7 @@ def call_tool(tool_name, **kwargs):
                 "error":"Trial ID Not Found"
             }
         return {
-            "type":"text",
+            "type":"whatif",
             "title":f"What If Scenario For {what_if_prediction['trial_id']}",
             "data": what_if_prediction
         }
