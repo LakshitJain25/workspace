@@ -699,7 +699,7 @@ def chat_with_ai():
                 # If multiple tools were called, you might choose to return the first one,
                 # or combine them, depending on expected frontend behavior.
                 # For now, let's return the first tool's structured output.
-                return jsonify({"success": True, "data": tool_outputs[0], "message":llm_response_content})
+                return jsonify({"success": True, "data": {**tool_outputs[0], "message":llm_response_content}})
             elif llm_explanation:
                 # If a tool failed but we have an explanation, provide that
                  return jsonify({"success": True, "data": {"type": "text", "message": llm_explanation}})
