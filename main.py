@@ -345,7 +345,7 @@ def predict_pts(trial_row):
   classifier = model.named_steps['classifier']
   test_df_transformed = preprocessor.transform(trial_row)
   preds = classifier.predict_proba(test_df_transformed)[:,1]
-  return preds[0]
+  return preds[0] * 100
 
 def what_if_scenario_tool(trial_id, changes):
     global df_backend
